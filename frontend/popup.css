@@ -1,0 +1,74 @@
+body {
+      font-family: sans-serif;
+      margin: 0;
+      padding: 16px;
+      background-color: #f2f2f2;
+      width: 300px;
+      height: 400px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    h3 {
+      margin-bottom: 10px;
+    }
+
+    #chatbox {
+      flex-grow: 1;
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      padding: 10px;
+      overflow-y: auto;
+      margin-bottom: 12px;
+    }
+
+    .message {
+      margin-bottom: 10px;
+    }
+
+    .user {
+      font-weight: bold;
+      color: #1a73e8;
+    }
+
+    .bot {
+      color: #333;
+      margin-left: 10px;
+    }
+
+    #question {
+      width: 100%;
+      height: 60px;
+      padding: 8px;
+      resize: none;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+    }
+
+    #askBtn {
+      margin-top: 8px;
+      padding: 6px;
+      width: 100%;
+      border: none;
+      background-color: #1a73e8;
+      color: white;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    #loader {
+      display: none;
+      margin: 8px auto;
+      width: 20px;
+      height: 20px;
+      border: 3px solid #f3f3f3;
+      border-top: 3px solid #1a73e8;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }

@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Web QA Chatbot",
+  "version": "1.5",
+  "description": "Ask questions about the current site using an LLM chatbot",
+  "permissions": ["activeTab", "scripting"],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "side_panel":{
+    "default_path":"popup.html"
+  }
+}
