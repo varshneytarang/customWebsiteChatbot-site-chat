@@ -1,0 +1,12 @@
+langchain
+langchain-community
+pypdf
+sentence-transformers
+google-generativeai
+tiktoken
+faiss-cpu
+unstructured
+tokenizers
+openai
+playwright
+flask
