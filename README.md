@@ -22,20 +22,15 @@ A Chrome extension that turns any webpage into an interactive chatbot. It extrac
 | **Extension**     | Chrome Extension (Manifest v3)         |
 | **Backend**       | Node.js + Python (Bridge)              |
 | **LLM Engine**    | Python script using Gemini or local LLM|
-| **Scraping Tool** | Playwright with persistent sessions    |
 
----
+--
 
 ## 📁 Folder Structure
 
 ```
 AIBOT_EXTENSION/
 ├── backend/
-│   ├── answerGeneration.py       # LLM answer generation
-│   ├── scrapeTheLink.py          # Web scraping with Playwright
-│   ├── index.js                  # Backend API server
-│   ├── package.json              # Node.js dependencies
-│   └── ...                       # Other helper files
+│   ├── app.py       # LLM answer generation
 ├── frontend/
 │   ├── manifest.json             # Chrome extension config
 │   ├── popup.html                # Extension UI
