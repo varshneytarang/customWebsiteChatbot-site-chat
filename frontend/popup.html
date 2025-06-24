@@ -5,8 +5,20 @@
     <title>Web QA Chatbot</title>
     <link rel="stylesheet" href="popup.css"/>
   </head>
+  <!-- Help Modal -->
+<div id="modal" class="modal">
+  <div class="modal-content">
+    <span class="close" id="closePopup">&times;</span>
+    <h4>Need Help?</h4>
+    <p>Please make sure the page is fully loaded before opening the extension to ensure accurate extraction and performance.</p>
+  </div>
+</div>
+
   <body>
+  <div id="navbar">
   <h3>Ask about this site</h3>
+  <button id="help">?</button>
+  </div>
 
   <div id="chatbox"></div>
 
@@ -15,6 +27,6 @@
 
   <div id="loader"></div>
 
-  <script src="popup.js"></script>
+  <script src="popup1.js"></script>
 </body>
 </html>
