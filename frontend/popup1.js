@@ -51,3 +51,4 @@ document.getElementById("help").addEventListener("click", () => {
 document.getElementById("closePopup").addEventListener("click", () => {
   document.getElementById("modal").style.display = "none";
 });
+
