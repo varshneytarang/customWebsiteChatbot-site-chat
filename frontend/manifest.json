@@ -3,7 +3,7 @@
   "name": "Web QA Chatbot",
   "version": "2.0",
   "description": "Ask questions about the current site using an LLM chatbot",
-  "permissions": ["tabs","sidePanel","activeTab", "scripting","sidePanel"],
+  "permissions": ["tabs","sidePanel","activeTab", "scripting","storage"],
   "host_permissions": ["<all_urls>"],
   "icons":{
     "32":"public/width_800.jpg"

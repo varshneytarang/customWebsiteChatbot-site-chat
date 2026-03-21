@@ -22,6 +22,13 @@ warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 
 load_dotenv()
+
+# Validate Groq API key
+if not os.getenv("GROQ_API_KEY"):
+    print("❌ ERROR: GROQ_API_KEY not found in .env file!")
+    print("Please add: GROQ_API_KEY='your_api_key_here' to backend/.env")
+    sys.exit(1)
+
 app=Flask(__name__)
 text_splitter=CharacterTextSplitter(
     separator='\n',
@@ -32,13 +39,18 @@ model_name = "sentence-transformers/all-MiniLM-L6-v2"
 embedder = HuggingFaceEmbeddings(model_name=model_name)
 groq_model = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 groqLlm = ChatGroq(model=groq_model, temperature=0.3)
-chain=None
+chains_by_tab = {}
+memories_by_tab = {}
+print(f"✅ Groq initialized with model: {groq_model}")
 
-
+def _get_tab_id(data):
+    tab_id = data.get("tabId", "default")
+    return str(tab_id)
 
 @app.route("/prepareIt",methods=['POST'])
 def prepare():
-    global chain
+    global chains_by_tab
+    global memories_by_tab
     data = request.get_json()
     print(data)
     try:
@@ -52,23 +64,30 @@ def prepare():
         if not str(page_text).strip():
             return jsonify({"error": "The 'result' field is empty. No page content was extracted."}), 400
 
+        tab_id = _get_tab_id(data)
+        if(tab_id is memories_by_tab and tab_id in memories_by_tab):
+            return jsonify({"msg": "Chain already prepared for this tab."}), 200
         docs = [Document(page_content=page_text)]
 
         
         text_chunks=text_splitter.split_documents(docs)
 
         vector_store=FAISS.from_documents(text_chunks,embedder)
-        
-        memory = ConversationBufferMemory(
-            memory_key="chat_history", return_messages=True
-        )
-        
+
+        memory = memories_by_tab.get(tab_id)
+        if memory is None:
+            memory = ConversationBufferMemory(
+                memory_key="chat_history", return_messages=True
+            )
+            memories_by_tab[tab_id] = memory
+
         chain = ConversationalRetrievalChain.from_llm(
             llm=groqLlm,
             memory=memory,
             retriever=vector_store.as_retriever()
         )
-        print("successfully prepared the chain")
+        chains_by_tab[tab_id] = chain
+        print(f"successfully prepared the chain for tab {tab_id}")
         
         return jsonify({"msg": "Success"}), 200
     except Exception as e:
@@ -79,12 +98,15 @@ def prepare():
 
 @app.route("/askIt", methods=["POST"])
 def scrape():
-    global chain
+    global chains_by_tab
     data = request.get_json()
     print(data)
     try:
         if not data:
             return jsonify({"answer": "Invalid request", "error": "Request body must be valid JSON."}), 400
+
+        tab_id = _get_tab_id(data)
+        chain = chains_by_tab.get(tab_id)
 
         if chain is None:
             return jsonify({"answer": "Please prepare the page first.", "error": "Chain is not initialized"}), 400
@@ -100,7 +122,7 @@ def scrape():
         # Format output: bold **...** and newlines
         ans = re.sub(r"\*\*(.*?)\*\*", r"\n<b>\1</b>", answer_text)
         ans = ans.replace("\\n", "\n")
-        ans=ans.replace("\*","/")
+        ans = ans.replace(r"\*", "/")
 
         print(ans)
         return jsonify({"answer": ans}) 
@@ -118,4 +140,4 @@ def scrape():
 
 
 if __name__ == "__main__":
-    app.run(port=5000)
+    app.run(port=5000, debug=True)
