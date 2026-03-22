@@ -35,6 +35,12 @@
         <option value="research">Research response</option>
       </select>
     </div>
+    <div class="upload-row">
+      <input id="contextFile" class="context-file-input" type="file" accept=".txt,.md,.json,.csv,.log,.pdf,.docx" />
+      <button id="uploadContextBtn" class="btn-upload" type="button">Upload context</button>
+      <button id="clearContextBtn" class="btn-clear" type="button">Clear</button>
+    </div>
+    <div id="uploadInfo" class="upload-info">No uploaded context</div>
     <div class="input-wrapper">
       <textarea 
         id="question" 

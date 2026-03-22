@@ -143,8 +143,12 @@ Use your preferred virtual environment and install dependencies:
 
 ```bash
 cd backend
-pip install flask python-dotenv langchain langchain-groq langchain-community sentence-transformers faiss-cpu tavily-python nltk torch
+pip install flask python-dotenv langchain langchain-groq langchain-community sentence-transformers faiss-cpu tavily-python nltk torch pypdf python-docx pypdfium2 rapidocr-onnxruntime pillow
 ```
+
+Notes:
+- `pypdf` and `python-docx` support PDF/DOCX upload parsing.
+- `pypdfium2` + `rapidocr-onnxruntime` provide OCR fallback when PDFs have no usable text layer.
 
 ### 2) Environment Variables
 

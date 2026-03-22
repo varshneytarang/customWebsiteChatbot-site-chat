@@ -1,6 +1,12 @@
 document.addEventListener("DOMContentLoaded", () => {
   // Auto-adjust textarea height
   const textarea = document.getElementById("question");
+  const contextFileInput = document.getElementById("contextFile");
+  const uploadContextBtn = document.getElementById("uploadContextBtn");
+  const clearContextBtn = document.getElementById("clearContextBtn");
+  const uploadInfo = document.getElementById("uploadInfo");
+  let uploadedContextPayload = null;
+  const maxUploadBytes = 4 * 1024 * 1024;
   
   if (!textarea) {
     console.error("❌ Error: textarea element not found!");
@@ -17,6 +23,99 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       document.getElementById("askBtn").click();
+    }
+  });
+
+  uploadContextBtn?.addEventListener("click", () => {
+    contextFileInput?.click();
+  });
+
+  clearContextBtn?.addEventListener("click", () => {
+    uploadedContextPayload = null;
+    if (contextFileInput) {
+      contextFileInput.value = "";
+    }
+    if (uploadInfo) {
+      uploadInfo.textContent = "No uploaded context";
+    }
+  });
+
+  contextFileInput?.addEventListener("change", async (event) => {
+    const file = event.target?.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    if (file.size > maxUploadBytes) {
+      uploadedContextPayload = null;
+      if (uploadInfo) {
+        uploadInfo.textContent = "File too large. Keep uploads under 4 MB.";
+      }
+      return;
+    }
+
+    if (uploadInfo) {
+      uploadInfo.textContent = `Reading ${file.name}...`;
+    }
+
+    try {
+      const lowerName = String(file.name || "").toLowerCase();
+      const isPdf = lowerName.endsWith(".pdf");
+      const isDocx = lowerName.endsWith(".docx");
+
+      if (isPdf || isDocx) {
+        const dataUrl = await readFileAsDataUrl(file);
+        const base64 = getBase64FromDataUrl(dataUrl);
+        if (!base64) {
+          uploadedContextPayload = null;
+          if (uploadInfo) {
+            uploadInfo.textContent = "Could not read this binary file.";
+          }
+          return;
+        }
+
+        uploadedContextPayload = {
+          type: isPdf ? "pdf" : "docx",
+          name: file.name,
+          base64
+        };
+
+        if (uploadInfo) {
+          uploadInfo.textContent = `Loaded ${file.name} (${isPdf ? "PDF" : "DOCX"})`;
+        }
+        return;
+      }
+
+      const text = await file.text();
+      const normalized = String(text || "").trim();
+      if (!normalized) {
+        uploadedContextPayload = null;
+        if (uploadInfo) {
+          uploadInfo.textContent = "File is empty. Upload a text-based file.";
+        }
+        return;
+      }
+
+      const maxChars = 12000;
+      const textSlice = normalized.slice(0, maxChars);
+      const truncated = normalized.length > maxChars;
+      uploadedContextPayload = {
+        type: "text",
+        name: file.name,
+        text: textSlice
+      };
+
+      if (uploadInfo) {
+        uploadInfo.textContent = truncated
+          ? `Loaded ${file.name} (${maxChars} chars used)`
+          : `Loaded ${file.name} (${textSlice.length} chars)`;
+      }
+    } catch (readError) {
+      uploadedContextPayload = null;
+      if (uploadInfo) {
+        uploadInfo.textContent = "Could not read this file.";
+      }
+      console.error("Failed to read context file:", readError);
     }
   });
 
@@ -60,13 +159,27 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const {url} = tab;
 
-      const res = await fetch("http://localhost:5000/askIt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, question, tabId: tab.id, response_mode: selectedMode })
-      });
+      const askPayload = {
+        url,
+        question,
+        tabId: tab.id,
+        response_mode: selectedMode,
+        additional_context: uploadedContextPayload?.text || "",
+        additional_context_name: uploadedContextPayload?.name || "",
+        additional_context_payload: uploadedContextPayload
+      };
 
-      const data = await res.json();
+      let data = await askBackend(askPayload);
+
+      if (String(data?.error || "").toLowerCase().includes("chain is not initialized")) {
+        status.textContent = "Preparing page context...";
+        await prepareCurrentTab(tab.id);
+        data = await askBackend(askPayload);
+      }
+
+      if (data?.error) {
+        throw new Error(data.error || data.answer || "Request failed");
+      }
       console.log(data);
 
       const botMsg = document.createElement("div");
@@ -237,6 +350,7 @@ document.addEventListener("DOMContentLoaded", () => {
   function formatResponseMeta(data) {
     const rating = data?.context_rating || {};
     const answerUrls = data?.answer_urls?.items || [];
+    const contextStatus = String(data?.additional_context_status || "").trim().toLowerCase();
 
     const score = Number(rating.relevance_score);
     const label = String(rating.relevance_label || "unknown").toLowerCase();
@@ -244,8 +358,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const hasRating = Number.isFinite(score);
     const hasUrls = Array.isArray(answerUrls) && answerUrls.length > 0;
+    const showContextStatus = Boolean(contextStatus) && contextStatus !== "none";
 
-    if (!hasRating && !hasUrls) {
+    if (!hasRating && !hasUrls && !showContextStatus) {
       return "";
     }
 
@@ -274,8 +389,135 @@ document.addEventListener("DOMContentLoaded", () => {
       html += '</div>';
     }
 
+    if (showContextStatus) {
+      const statusMeta = getContextStatusMeta(contextStatus);
+      html += '<div class="context-status-row">';
+      html += '<span class="context-status-label">Upload context:</span>';
+      html += `<span class="context-status-chip ${statusMeta.className}">${escapeHtml(statusMeta.text)}</span>`;
+      html += '</div>';
+    }
+
     html += '</div>';
     return html;
+  }
+
+  function getContextStatusMeta(status) {
+    if (status === "ok") {
+      return { className: "ok", text: "parsed" };
+    }
+    if (status === "pdf_ocr_ok") {
+      return { className: "ok", text: "parsed via OCR" };
+    }
+    if (status.endsWith("_missing")) {
+      return { className: "warn", text: "parser missing" };
+    }
+    if (status.includes("ocr_dependency_missing")) {
+      return { className: "warn", text: "OCR dependency missing" };
+    }
+    if (status.includes("ocr_init_failed") || status.includes("ocr_failed") || status.includes("ocr_parse_error")) {
+      return { className: "error", text: "OCR failed" };
+    }
+    if (status.endsWith("_parse_error") || status.endsWith("_invalid_base64")) {
+      return { className: "error", text: "parse failed" };
+    }
+    if (status.endsWith("_text_unusable")) {
+      return { className: "warn", text: "text extraction unusable" };
+    }
+    if (status.includes("ocr_no_text")) {
+      return { className: "warn", text: "OCR found no text" };
+    }
+    if (status.endsWith("_no_text") || status.endsWith("_empty")) {
+      return { className: "warn", text: "no extractable text" };
+    }
+    return { className: "warn", text: status.replace(/_/g, " ") };
+  }
+
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(reader.error || new Error("File read error"));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function getBase64FromDataUrl(dataUrl) {
+    const splitIndex = dataUrl.indexOf(",");
+    if (splitIndex < 0) {
+      return "";
+    }
+    return dataUrl.slice(splitIndex + 1).trim();
+  }
+
+  async function askBackend(payload) {
+    let res;
+    try {
+      res = await fetch("http://localhost:5000/askIt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+    } catch (networkError) {
+      throw new Error("Backend offline. Start Python server.");
+    }
+
+    let data = {};
+    try {
+      data = await res.json();
+    } catch (parseError) {
+      if (!res.ok) {
+        throw new Error(`Request failed (${res.status})`);
+      }
+      throw new Error("Invalid backend response");
+    }
+
+    if (!res.ok && !data.error) {
+      data.error = data.answer || `Request failed (${res.status})`;
+    }
+
+    return data;
+  }
+
+  async function prepareCurrentTab(tabId) {
+    let extracted = "";
+    try {
+      const [resultObj] = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => document.body?.innerText || ""
+      });
+      extracted = String(resultObj?.result || "").trim();
+    } catch (scriptError) {
+      throw new Error("Unable to read current page content");
+    }
+
+    if (!extracted) {
+      throw new Error("No readable page content found");
+    }
+
+    let res;
+    try {
+      res = await fetch("http://localhost:5000/prepareIt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ result: extracted, tabId })
+      });
+    } catch (networkError) {
+      throw new Error("Backend offline. Start Python server.");
+    }
+
+    let prepData = {};
+    try {
+      prepData = await res.json();
+    } catch (parseError) {
+      if (!res.ok) {
+        throw new Error(`Prepare failed (${res.status})`);
+      }
+      return;
+    }
+
+    if (!res.ok) {
+      throw new Error(prepData.error || prepData.answer || `Prepare failed (${res.status})`);
+    }
   }
 
   console.log("✅ popup1.js loaded successfully");

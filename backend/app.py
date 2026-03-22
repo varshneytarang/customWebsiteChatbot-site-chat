@@ -1,6 +1,5 @@
 import sys
 import os
-import torch
 from dotenv import load_dotenv
 import re
 from langchain.text_splitter import CharacterTextSplitter
@@ -21,6 +20,8 @@ import PROMPTS.system_prompt as system_prompt
 import PROMPTS.research_report_prompt as research_report_prompt
 from service.context_rating_service import get_context_rating
 from service.web_search_service import get_web_context
+from service.uploads.content_extractor import extract_additional_context
+import service.uploads.helpers.prompt_inferencing as inferencing
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 
@@ -47,6 +48,39 @@ research_chains_by_tab = {}
 memories_by_tab = {}
 page_context_by_tab = {}
 print(f"✅ Groq initialized with model: {groq_model}")
+
+MAX_ADDITIONAL_CONTEXT_CHARS = 3500
+MAX_BASE64_LENGTH = 6_000_000
+
+
+def _build_tab_chains(tab_id, page_text):
+    docs = [Document(page_content=page_text)]
+    text_chunks = text_splitter.split_documents(docs)
+    vector_store = FAISS.from_documents(text_chunks, embedder)
+
+    memory = memories_by_tab.get(tab_id)
+    if memory is None:
+        memory = ConversationBufferMemory(
+            memory_key="chat_history", return_messages=True
+        )
+        memories_by_tab[tab_id] = memory
+
+    chain = ConversationalRetrievalChain.from_llm(
+        llm=groqLlm,
+        memory=memory,
+        retriever=vector_store.as_retriever(),
+        combine_docs_chain_kwargs={"prompt": system_prompt.QA_PROMPT}
+    )
+
+    research_chain = ConversationalRetrievalChain.from_llm(
+        llm=groqLlm,
+        memory=memory,
+        retriever=vector_store.as_retriever(),
+        combine_docs_chain_kwargs={"prompt": research_report_prompt.RESEARCH_REPORT_PROMPT}
+    )
+
+    chains_by_tab[tab_id] = chain
+    research_chains_by_tab[tab_id] = research_chain
 
 
 
@@ -84,6 +118,7 @@ def _build_answer_urls(current_page_url, web_sources):
         "items": urls
     }
 
+
 @app.route("/prepareIt",methods=['POST'])
 def prepare():
     global chains_by_tab
@@ -107,36 +142,7 @@ def prepare():
         if tab_id in chains_by_tab and tab_id in research_chains_by_tab:
             return jsonify({"msg": "Chain already prepared for this tab."}), 200
         page_context_by_tab[tab_id] = str(page_text)
-        docs = [Document(page_content=page_text)]
-
-        
-        text_chunks=text_splitter.split_documents(docs)
-
-        vector_store=FAISS.from_documents(text_chunks,embedder)
-
-        memory = memories_by_tab.get(tab_id)
-        if memory is None:
-            memory = ConversationBufferMemory(
-                memory_key="chat_history", return_messages=True
-            )
-            memories_by_tab[tab_id] = memory
-
-        chain = ConversationalRetrievalChain.from_llm(
-            llm=groqLlm,
-            memory=memory,
-            retriever=vector_store.as_retriever(),
-            combine_docs_chain_kwargs={"prompt": system_prompt.QA_PROMPT}
-        )
-
-        research_chain = ConversationalRetrievalChain.from_llm(
-            llm=groqLlm,
-            memory=memory,
-            retriever=vector_store.as_retriever(),
-            combine_docs_chain_kwargs={"prompt": research_report_prompt.RESEARCH_REPORT_PROMPT}
-        )
-
-        chains_by_tab[tab_id] = chain
-        research_chains_by_tab[tab_id] = research_chain
+        _build_tab_chains(tab_id, str(page_text))
         print(f"successfully prepared the chain for tab {tab_id}")
         
         return jsonify({"msg": "Success"}), 200
@@ -162,7 +168,22 @@ def scrape():
         research_chain = research_chains_by_tab.get(tab_id)
 
         if chain is None or research_chain is None:
-            return jsonify({"answer": "Please prepare the page first.", "error": "Chain is not initialized"}), 400
+            page_text = str(data.get("result", "") or "").strip()
+            if page_text:
+                page_context_by_tab[tab_id] = page_text
+            else:
+                page_text = str(page_context_by_tab.get(tab_id, "") or "").strip()
+
+            if page_text:
+                _build_tab_chains(tab_id, page_text)
+                chain = chains_by_tab.get(tab_id)
+                research_chain = research_chains_by_tab.get(tab_id)
+
+        if chain is None or research_chain is None:
+            return jsonify({
+                "answer": "Please prepare the page first.",
+                "error": "Chain is not initialized"
+            }), 400
 
         que = data.get("question", "")
         if not str(que).strip():
@@ -172,26 +193,43 @@ def scrape():
         force_research = response_mode == "research"
 
         current_page_url = data.get("url", "")
+        additional_context, additional_context_name, additional_context_status = extract_additional_context(data)
 
         context_for_rating = page_context_by_tab.get(tab_id, "")
+        rating_input_context = context_for_rating
+        if additional_context:
+            source_label = additional_context_name or "user upload"
+            rating_input_context = (
+                f"{context_for_rating}\n\n[Additional User Context: {source_label}]\n"
+                f"{additional_context}"
+            )
+
         rating_json = get_context_rating(
             llm=groqLlm,
             question=que,
-            context=context_for_rating,
+            context=rating_input_context,
         )
 
-        print(f"Relevance score result: {rating_json}")
-        score = rating_json.get("relevance_score")
-        score = score if isinstance(score, (int, float)) else 0
+        # print(f"Relevance score result: {rating_json}")
+        # score = rating_json.get("relevance_score")
+        # score = score if isinstance(score, (int, float)) else 0
 
         active_chain = research_chain if force_research else chain
+        primary_question = f"Answer in English:{que}"
 
-        if score > 40 and not force_research:
+        if not force_research:
+            if additional_context:
+                answer_text = inferencing._invoke_with_uploaded_context(
+                    question=que,
+                    uploaded_context=additional_context,
+                    uploaded_name=additional_context_name,
+                    page_context=context_for_rating,
+                    groqLlm=groqLlm,
+                )
+            else:
+                result = active_chain.invoke({"question": primary_question})
+                answer_text = result.get("answer") or result.get("result") or str(result)
 
-            result = active_chain.invoke({"question": f"Answer in English:{que}"})
-            # print(result)
-
-            answer_text = result.get("answer") or result.get("result") or str(result)
             # Format output: bold **...** and newlines
             ans = re.sub(r"\*\*(.*?)\*\*", r"\n<b>\1</b>", answer_text)
             ans = ans.replace("\\n", "\n")
@@ -200,10 +238,10 @@ def scrape():
             # print(ans)
             return jsonify({
                 "answer": ans,
-                "context_rating": rating_json,
                 "used_web_fallback": False,
                 "web_sources": [],
                 "answer_urls": _build_answer_urls(current_page_url, []),
+                "additional_context_status": additional_context_status,
                 "response_mode": response_mode
             })
         else:
@@ -213,6 +251,8 @@ def scrape():
             if snippets_text:
                 fallback_question = (
                     f"User Question: {que}\n\n"
+                    f"Additional user-provided context ({additional_context_name or 'uploaded file'}):\n"
+                    f"{additional_context or 'No additional user context provided.'}\n\n"
                     "Additional web context (user-provided references):\n"
                     f"{snippets_text}\n\n"
                     "Use these web references because page-context relevance is low. "
@@ -221,6 +261,8 @@ def scrape():
             else:
                 fallback_question = (
                     f"Question: {que}\n\n"
+                    f"Additional user-provided context ({additional_context_name or 'uploaded file'}):\n"
+                    f"{additional_context or 'No additional user context provided.'}\n\n"
                     "Page-context relevance is low and no web fallback context was available. "
                     "If context is insufficient, say what is missing."
                 )
@@ -239,6 +281,7 @@ def scrape():
                 "web_sources": web_result.get("sources", []),
                 "fallback_reason": web_result.get("reason", "low_context_relevance"),
                 "answer_urls": _build_answer_urls(current_page_url, web_result.get("sources", [])),
+                "additional_context_status": additional_context_status,
                 "response_mode": response_mode
             })
                 
