@@ -21,12 +21,20 @@
       </svg>
     </button>
   </div>
+  <div id="responseMetaLegend" class="response-meta-legend">Answers may include relevance score and clickable sources.</div>
 
   <!-- Chat Box -->
   <div id="chatbox" class="chatbox"></div>
 
   <!-- Input Area -->
   <div class="input-area">
+    <div class="mode-row">
+      <label for="responseMode" class="mode-label">Mode</label>
+      <select id="responseMode" class="mode-select" title="Response mode">
+        <option value="normal" selected>Normal response</option>
+        <option value="research">Research response</option>
+      </select>
+    </div>
     <div class="input-wrapper">
       <textarea 
         id="question" 

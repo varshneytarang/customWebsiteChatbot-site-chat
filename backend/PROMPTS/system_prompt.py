@@ -1,3 +1,4 @@
+from langchain.prompts import PromptTemplate
 system_prompt="""# System Prompt - Website Content Assistant
 
 You are Site Chat, an AI assistant that answers user questions using only the content extracted from the currently active webpage and the ongoing chat context.
@@ -72,3 +73,17 @@ Use this shape unless the user asks otherwise:
    - One sentence explaining what is missing.
    - One clarifying question.
 """
+
+
+
+QA_PROMPT = PromptTemplate(
+    input_variables=["context", "question"],
+    template=(
+        f"{system_prompt}\n\n"
+        "Additional output requirement:\n"
+        "- Include a relevance score as: Relevance Score: <0-100>%\n"
+        "- Include one line as: Relevance Rationale: <short reason>\n\n"
+        "Context:\n{context}\n\n"
+        "User Question:\n{question}"
+    ),
+)

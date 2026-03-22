@@ -1,88 +1,199 @@
-# Web QA Chatbot
+# Site Chat Extension
 
-A Chrome extension that turns any webpage into an interactive chatbot. It extracts content from the active tab and allows users to ask questions about it via a Python-based LLM backend.
+Site Chat is a Chrome extension that converts any open webpage into a context-aware AI chat experience.
 
----
+The extension extracts page text, prepares a retrieval pipeline on the backend, and answers follow-up questions with memory continuity per browser tab. It also supports a Research mode that can force web-augmented responses when needed.
 
-## 🔍 Features
+## Project Highlights
 
-- Extracts content from the active browser tab  
-- Sends it to a backend running a Python LLM or API call  
-- Receives and displays intelligent answers in the popup  
-- Handles dynamic or login-protected sites using Playwright  
-- Built as a lightweight, fast Chrome extension
+- Tab-scoped conversational memory for stable multi-turn chat
+- Dual response modes:
+	- Normal response: primary page-context flow
+	- Research response: always runs web-augmented flow
+- Context relevance scoring returned as structured JSON
+- Source URL payload returned separately for frontend rendering
+- Optional web fallback using Tavily when context relevance is low
+- Structured output formatting in UI:
+	- paragraphs
+	- lists
+	- code blocks
+	- clickable sources
 
----
+## Product Flow
 
-## 🛠️ Tech Stack
+1. Extension loads and extracts text from active tab.
+2. Backend prepares a retrieval chain for that tab.
+3. User asks a question from popup chat.
+4. Backend computes context relevance score.
+5. Backend selects route:
+	 - Normal mode + high relevance: answer from page chain.
+	 - Normal mode + low relevance: web-augmented fallback.
+	 - Research mode: web-augmented path every time.
+6. Frontend renders answer, relevance chip, and source links.
 
-| Part             | Tech                                  |
-|------------------|----------------------------------------|
-| **Frontend**      | HTML, CSS, JavaScript (Vanilla)        |
-| **Extension**     | Chrome Extension (Manifest v3)         |
-| **Backend**       | Node.js + Python (Bridge)              |
-| **LLM Engine**    | Python script using Gemini or local LLM|
+## Architecture
 
---
+Frontend
+- Chrome Extension (Manifest v3)
+- Popup UI: modern chat layout with mode switch, metadata, and source links
 
-## 📁 Folder Structure
+Backend
+- Flask API
+- LangChain conversational retrieval chains
+- Groq chat model
+- Optional Tavily web search integration
 
+Prompt System
+- Prompt modules under backend/PROMPTS
+- Separate prompts for:
+	- standard QA
+	- context rating
+	- long descriptive research reports
+
+## Folder Structure
+
+```text
+aibot_extension/
+	backend/
+		app.py
+		context_rating_service.py
+		web_search_service.py
+		PROMPTS/
+			system_prompt.py
+			context_rating_prompt.py
+			research_report_prompt.py
+	frontend/
+		manifest.json
+		service_worker.js
+		intro.html
+		intro.css
+		loader.html
+		loading.js
+		popup.html
+		popup.css
+		popup1.js
 ```
-AIBOT_EXTENSION/
-├── backend/
-│   ├── app.py       # LLM answer generation
-├── frontend/
-│   ├── manifest.json             # Chrome extension config
-│   ├── popup.html                # Extension UI
-│   ├── popup.js                  # JS to handle UI logic
-│   └── popup.css                 # Styling
+
+## API Endpoints
+
+POST /prepareIt
+- input: extracted page text, tab id
+- output: chain preparation status
+
+POST /askIt
+- input:
+	- question
+	- tab id
+	- current page url
+	- response mode
+- output:
+	- answer
+	- context_rating
+	- used_web_fallback
+	- web_sources
+	- answer_urls
+	- response_mode
+
+## Response Payload Design
+
+answer_urls is intentionally separate from answer text for clean frontend rendering.
+
+Example:
+
+```json
+{
+	"answer": "...",
+	"context_rating": {
+		"relevance_score": 78,
+		"relevance_label": "high",
+		"reason": "Most key terms were present in page context."
+	},
+	"used_web_fallback": false,
+	"web_sources": [],
+	"answer_urls": {
+		"count": 1,
+		"items": [
+			{
+				"title": "Current page",
+				"url": "https://example.com",
+				"source_type": "page_context"
+			}
+		]
+	},
+	"response_mode": "normal"
+}
 ```
 
----
+## UI Motion and Interaction System
 
-## 🚀 How It Works
+The extension UI is lightweight but intentionally animated:
 
-1. User clicks the extension → popup opens  
-2. `popup.js` sends the active tab URL/content to `backend/index.js`  
-3. Backend triggers Python script (`scrapeTheLink.py`) to extract data  
-4. That data is passed to `answerGeneration.py` using an LLM  
-5. The answer is returned to the popup and shown to the user
+- Intro card entrance animation
+- Loader transition while context is prepared
+- Message enter animation in chat stream
+- Animated typing/processing indicators
+- Styled metadata chips for relevance
+- Source links rendered directly under each answer
 
----
+## Setup
 
-## 🧪 Setup Instructions
+### 1) Python Environment
 
-### 1. Clone the repo
-```bash
-git clone https://github.com/your-username/web-qa-chatbot.git
-cd web-qa-chatbot
-```
+Use your preferred virtual environment and install dependencies:
 
-### 2. Backend Setup
 ```bash
 cd backend
-npm install
+pip install flask python-dotenv langchain langchain-groq langchain-community sentence-transformers faiss-cpu tavily-python nltk torch
 ```
 
-Make sure Python dependencies are installed:
+### 2) Environment Variables
+
+Create or update backend/.env:
+
+```env
+GROQ_API_KEY="your_groq_key"
+GROQ_MODEL="llama-3.1-8b-instant"
+TAVILY_API_KEY="your_tavily_key_optional"
+```
+
+Notes:
+- GROQ_API_KEY is required.
+- TAVILY_API_KEY is optional but required for web fallback search.
+
+### 3) Run Backend
+
 ```bash
-pip install openai playwright
-playwright install
+cd backend
+python app.py
 ```
 
-### 3. Load Chrome Extension
+### 4) Load Extension
 
-1. Open `chrome://extensions/`
-2. Enable "Developer Mode"
-3. Click **Load unpacked**
-4. Select the `frontend` folder
+1. Open chrome://extensions
+2. Enable Developer mode
+3. Click Load unpacked
+4. Select frontend folder
 
----
+## Modes
 
-## 🧠 Notes
+Normal response
+- Uses page-context chain by default
+- Falls back to web context when relevance is low
 
-- Use `playwright_profile/` to persist login sessions
-- Make sure the backend server is running before using the extension
-- Can be adapted to any LLM (OpenAI,Falcon,Llama,Mistral HuggingFace, local models)
+Research response
+- Forces web-augmented flow
+- Uses report-style prompt structure for more descriptive outputs
 
----
+## Current Status
+
+Implemented
+- Tab-scoped chains and shared memory continuity
+- Context relevance scoring
+- URL metadata contract for frontend links
+- Web fallback service integration
+- Research report prompt module
+
+Planned enhancements
+- Collapsible source blocks in chat
+- Optional citation numbering in answer body
+- Persistent conversation export per tab

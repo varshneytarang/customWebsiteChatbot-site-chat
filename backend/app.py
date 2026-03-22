@@ -11,7 +11,6 @@ from langchain_groq import ChatGroq
 from langchain_community.vectorstores import FAISS
 from langchain.chains import ConversationalRetrievalChain
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.prompts import PromptTemplate
 import nltk
 nltk.download('punkt')
 nltk.download('averaged_perceptron_tagger')
@@ -19,8 +18,9 @@ from flask import Flask, request, jsonify
 import warnings
 import traceback
 import PROMPTS.system_prompt as system_prompt   
-from context_rating_service import get_context_rating
-from web_search_service import get_web_context
+import PROMPTS.research_report_prompt as research_report_prompt
+from service.context_rating_service import get_context_rating
+from service.web_search_service import get_web_context
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 
@@ -43,21 +43,12 @@ embedder = HuggingFaceEmbeddings(model_name=model_name)
 groq_model = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 groqLlm = ChatGroq(model=groq_model, temperature=0.3)
 chains_by_tab = {}
+research_chains_by_tab = {}
 memories_by_tab = {}
 page_context_by_tab = {}
 print(f"✅ Groq initialized with model: {groq_model}")
 
-QA_PROMPT = PromptTemplate(
-    input_variables=["context", "question"],
-    template=(
-        f"{system_prompt.system_prompt}\n\n"
-        "Additional output requirement:\n"
-        "- Include a relevance score as: Relevance Score: <0-100>%\n"
-        "- Include one line as: Relevance Rationale: <short reason>\n\n"
-        "Context:\n{context}\n\n"
-        "User Question:\n{question}"
-    ),
-)
+
 
 def _get_tab_id(data):
     tab_id = data.get("tabId", "default")
@@ -96,6 +87,7 @@ def _build_answer_urls(current_page_url, web_sources):
 @app.route("/prepareIt",methods=['POST'])
 def prepare():
     global chains_by_tab
+    global research_chains_by_tab
     global memories_by_tab
     global page_context_by_tab
     data = request.get_json()
@@ -112,7 +104,7 @@ def prepare():
             return jsonify({"error": "The 'result' field is empty. No page content was extracted."}), 400
 
         tab_id = _get_tab_id(data)
-        if tab_id in chains_by_tab:
+        if tab_id in chains_by_tab and tab_id in research_chains_by_tab:
             return jsonify({"msg": "Chain already prepared for this tab."}), 200
         page_context_by_tab[tab_id] = str(page_text)
         docs = [Document(page_content=page_text)]
@@ -133,9 +125,18 @@ def prepare():
             llm=groqLlm,
             memory=memory,
             retriever=vector_store.as_retriever(),
-            combine_docs_chain_kwargs={"prompt": QA_PROMPT}
+            combine_docs_chain_kwargs={"prompt": system_prompt.QA_PROMPT}
         )
+
+        research_chain = ConversationalRetrievalChain.from_llm(
+            llm=groqLlm,
+            memory=memory,
+            retriever=vector_store.as_retriever(),
+            combine_docs_chain_kwargs={"prompt": research_report_prompt.RESEARCH_REPORT_PROMPT}
+        )
+
         chains_by_tab[tab_id] = chain
+        research_chains_by_tab[tab_id] = research_chain
         print(f"successfully prepared the chain for tab {tab_id}")
         
         return jsonify({"msg": "Success"}), 200
@@ -148,6 +149,7 @@ def prepare():
 @app.route("/askIt", methods=["POST"])
 def scrape():
     global chains_by_tab
+    global research_chains_by_tab
     global page_context_by_tab
     data = request.get_json()
     print(data)
@@ -157,13 +159,17 @@ def scrape():
 
         tab_id = _get_tab_id(data)
         chain = chains_by_tab.get(tab_id)
+        research_chain = research_chains_by_tab.get(tab_id)
 
-        if chain is None:
+        if chain is None or research_chain is None:
             return jsonify({"answer": "Please prepare the page first.", "error": "Chain is not initialized"}), 400
 
         que = data.get("question", "")
         if not str(que).strip():
             return jsonify({"answer": "Please enter a question.", "error": "Missing or empty 'question' field."}), 400
+
+        response_mode = str(data.get("response_mode", "normal")).strip().lower()
+        force_research = response_mode == "research"
 
         current_page_url = data.get("url", "")
 
@@ -178,9 +184,11 @@ def scrape():
         score = rating_json.get("relevance_score")
         score = score if isinstance(score, (int, float)) else 0
 
-        if score > 40:
+        active_chain = research_chain if force_research else chain
 
-            result = chain.invoke({"question": f"Answer in English:{que}"})
+        if score > 40 and not force_research:
+
+            result = active_chain.invoke({"question": f"Answer in English:{que}"})
             # print(result)
 
             answer_text = result.get("answer") or result.get("result") or str(result)
@@ -195,7 +203,8 @@ def scrape():
                 "context_rating": rating_json,
                 "used_web_fallback": False,
                 "web_sources": [],
-                "answer_urls": _build_answer_urls(current_page_url, [])
+                "answer_urls": _build_answer_urls(current_page_url, []),
+                "response_mode": response_mode
             })
         else:
             web_result = get_web_context(question=que)
@@ -207,16 +216,16 @@ def scrape():
                     "Additional web context (user-provided references):\n"
                     f"{snippets_text}\n\n"
                     "Use these web references because page-context relevance is low. "
-                    "Answer in English and be explicit where web context informed the answer."
+                    "Be explicit about where web context informed the answer."
                 )
             else:
                 fallback_question = (
-                    f"Answer in English: {que}\n\n"
+                    f"Question: {que}\n\n"
                     "Page-context relevance is low and no web fallback context was available. "
                     "If context is insufficient, say what is missing."
                 )
 
-            fallback_result = chain.invoke({"question": fallback_question})
+            fallback_result = active_chain.invoke({"question": fallback_question})
             web_answer = fallback_result.get("answer") or fallback_result.get("result") or str(fallback_result)
 
             web_answer = re.sub(r"\*\*(.*?)\*\*", r"\n<b>\1</b>", web_answer)
@@ -229,7 +238,8 @@ def scrape():
                 "used_web_fallback": web_result.get("used_web_fallback", False),
                 "web_sources": web_result.get("sources", []),
                 "fallback_reason": web_result.get("reason", "low_context_relevance"),
-                "answer_urls": _build_answer_urls(current_page_url, web_result.get("sources", []))
+                "answer_urls": _build_answer_urls(current_page_url, web_result.get("sources", [])),
+                "response_mode": response_mode
             })
                 
     except Exception as e:

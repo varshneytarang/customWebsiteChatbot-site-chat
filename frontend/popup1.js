@@ -26,6 +26,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const loader = document.getElementById("loader");
     const askBtn = document.getElementById("askBtn");
     const status = document.getElementById("status");
+    const responseMode = document.getElementById("responseMode");
 
     const question = questionInput.value.trim();
     if (!question) {return};
@@ -53,7 +54,8 @@ document.addEventListener("DOMContentLoaded", () => {
     textarea.style.height = "auto";
     loader.style.display = "flex";
     askBtn.disabled = true;
-    status.textContent = "Thinking...";
+    const selectedMode = (responseMode?.value || "normal").toLowerCase();
+    status.textContent = selectedMode === "research" ? "Researching..." : "Thinking...";
 
     try {
       const {url} = tab;
@@ -61,7 +63,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const res = await fetch("http://localhost:5000/askIt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, question, tabId: tab.id })
+        body: JSON.stringify({ url, question, tabId: tab.id, response_mode: selectedMode })
       });
 
       const data = await res.json();
@@ -70,7 +72,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const botMsg = document.createElement("div");
       botMsg.className = "message bot";
       const answer = data.answer || "No response received";
-      botMsg.innerHTML = `<span class="message-label">Bot</span><span class="message-text">${formatAnswer(answer)}</span>`;
+      botMsg.innerHTML = `<span class="message-label">Bot</span><span class="message-text">${formatAnswer(answer)}${formatResponseMeta(data)}</span>`;
       chatbox.appendChild(botMsg);
       chatbox.scrollTop = chatbox.scrollHeight;
       status.textContent = "Ready";
@@ -230,6 +232,50 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     return htmlParts.length ? htmlParts.join("") : "No response received";
+  }
+
+  function formatResponseMeta(data) {
+    const rating = data?.context_rating || {};
+    const answerUrls = data?.answer_urls?.items || [];
+
+    const score = Number(rating.relevance_score);
+    const label = String(rating.relevance_label || "unknown").toLowerCase();
+    const ratingClass = label === "high" || label === "medium" || label === "low" ? label : "medium";
+
+    const hasRating = Number.isFinite(score);
+    const hasUrls = Array.isArray(answerUrls) && answerUrls.length > 0;
+
+    if (!hasRating && !hasUrls) {
+      return "";
+    }
+
+    let html = '<div class="message-meta">';
+
+    if (hasRating) {
+      html += '<div class="rating-row">';
+      html += '<span class="rating-label">Context relevance:</span>';
+      html += `<span class="rating-chip ${ratingClass}">${score}% ${escapeHtml(label)}</span>`;
+      html += '</div>';
+    }
+
+    if (hasUrls) {
+      html += '<div class="source-list">';
+      html += '<span class="source-title">Sources:</span>';
+      answerUrls.forEach((item) => {
+        const url = String(item.url || "").trim();
+        if (!url) {
+          return;
+        }
+        const title = String(item.title || "Open source").trim();
+        const sourceType = String(item.source_type || "source").trim();
+        html += `<a class="source-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(title)}</a>`;
+        html += `<span class="source-type">${escapeHtml(sourceType)}</span>`;
+      });
+      html += '</div>';
+    }
+
+    html += '</div>';
+    return html;
   }
 
   console.log("✅ popup1.js loaded successfully");
