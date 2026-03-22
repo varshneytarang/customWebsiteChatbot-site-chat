@@ -1,5 +1,4 @@
 import sys
-import json
 import os
 import torch
 from dotenv import load_dotenv
@@ -12,12 +11,16 @@ from langchain_groq import ChatGroq
 from langchain_community.vectorstores import FAISS
 from langchain.chains import ConversationalRetrievalChain
 from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain.prompts import PromptTemplate
 import nltk
 nltk.download('punkt')
 nltk.download('averaged_perceptron_tagger')
 from flask import Flask, request, jsonify
 import warnings
 import traceback
+import PROMPTS.system_prompt as system_prompt   
+from context_rating_service import get_context_rating
+from web_search_service import get_web_context
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 
@@ -41,16 +44,60 @@ groq_model = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 groqLlm = ChatGroq(model=groq_model, temperature=0.3)
 chains_by_tab = {}
 memories_by_tab = {}
+page_context_by_tab = {}
 print(f"✅ Groq initialized with model: {groq_model}")
+
+QA_PROMPT = PromptTemplate(
+    input_variables=["context", "question"],
+    template=(
+        f"{system_prompt.system_prompt}\n\n"
+        "Additional output requirement:\n"
+        "- Include a relevance score as: Relevance Score: <0-100>%\n"
+        "- Include one line as: Relevance Rationale: <short reason>\n\n"
+        "Context:\n{context}\n\n"
+        "User Question:\n{question}"
+    ),
+)
 
 def _get_tab_id(data):
     tab_id = data.get("tabId", "default")
     return str(tab_id)
 
+
+def _build_answer_urls(current_page_url, web_sources):
+    urls = []
+    seen = set()
+
+    if current_page_url and str(current_page_url).strip():
+        normalized = str(current_page_url).strip()
+        urls.append({
+            "title": "Current page",
+            "url": normalized,
+            "source_type": "page_context"
+        })
+        seen.add(normalized)
+
+    for source in web_sources or []:
+        candidate = str(source.get("url", "")).strip()
+        if not candidate or candidate in seen:
+            continue
+        urls.append({
+            "title": source.get("title", "Web source"),
+            "url": candidate,
+            "source_type": "web_fallback"
+        })
+        seen.add(candidate)
+
+    return {
+        "count": len(urls),
+        "items": urls
+    }
+
 @app.route("/prepareIt",methods=['POST'])
 def prepare():
     global chains_by_tab
     global memories_by_tab
+    global page_context_by_tab
     data = request.get_json()
     print(data)
     try:
@@ -65,8 +112,9 @@ def prepare():
             return jsonify({"error": "The 'result' field is empty. No page content was extracted."}), 400
 
         tab_id = _get_tab_id(data)
-        if(tab_id is memories_by_tab and tab_id in memories_by_tab):
+        if tab_id in chains_by_tab:
             return jsonify({"msg": "Chain already prepared for this tab."}), 200
+        page_context_by_tab[tab_id] = str(page_text)
         docs = [Document(page_content=page_text)]
 
         
@@ -84,7 +132,8 @@ def prepare():
         chain = ConversationalRetrievalChain.from_llm(
             llm=groqLlm,
             memory=memory,
-            retriever=vector_store.as_retriever()
+            retriever=vector_store.as_retriever(),
+            combine_docs_chain_kwargs={"prompt": QA_PROMPT}
         )
         chains_by_tab[tab_id] = chain
         print(f"successfully prepared the chain for tab {tab_id}")
@@ -99,6 +148,7 @@ def prepare():
 @app.route("/askIt", methods=["POST"])
 def scrape():
     global chains_by_tab
+    global page_context_by_tab
     data = request.get_json()
     print(data)
     try:
@@ -115,17 +165,73 @@ def scrape():
         if not str(que).strip():
             return jsonify({"answer": "Please enter a question.", "error": "Missing or empty 'question' field."}), 400
 
-        result = chain.invoke({"question": f"Answer in English:{que}"})
-        print(result)
+        current_page_url = data.get("url", "")
 
-        answer_text = result.get("answer") or result.get("result") or str(result)
-        # Format output: bold **...** and newlines
-        ans = re.sub(r"\*\*(.*?)\*\*", r"\n<b>\1</b>", answer_text)
-        ans = ans.replace("\\n", "\n")
-        ans = ans.replace(r"\*", "/")
+        context_for_rating = page_context_by_tab.get(tab_id, "")
+        rating_json = get_context_rating(
+            llm=groqLlm,
+            question=que,
+            context=context_for_rating,
+        )
 
-        print(ans)
-        return jsonify({"answer": ans}) 
+        print(f"Relevance score result: {rating_json}")
+        score = rating_json.get("relevance_score")
+        score = score if isinstance(score, (int, float)) else 0
+
+        if score > 40:
+
+            result = chain.invoke({"question": f"Answer in English:{que}"})
+            # print(result)
+
+            answer_text = result.get("answer") or result.get("result") or str(result)
+            # Format output: bold **...** and newlines
+            ans = re.sub(r"\*\*(.*?)\*\*", r"\n<b>\1</b>", answer_text)
+            ans = ans.replace("\\n", "\n")
+            ans = ans.replace(r"\*", "/")
+
+            # print(ans)
+            return jsonify({
+                "answer": ans,
+                "context_rating": rating_json,
+                "used_web_fallback": False,
+                "web_sources": [],
+                "answer_urls": _build_answer_urls(current_page_url, [])
+            })
+        else:
+            web_result = get_web_context(question=que)
+            snippets_text = web_result.get("snippets_text", "")
+
+            if snippets_text:
+                fallback_question = (
+                    f"User Question: {que}\n\n"
+                    "Additional web context (user-provided references):\n"
+                    f"{snippets_text}\n\n"
+                    "Use these web references because page-context relevance is low. "
+                    "Answer in English and be explicit where web context informed the answer."
+                )
+            else:
+                fallback_question = (
+                    f"Answer in English: {que}\n\n"
+                    "Page-context relevance is low and no web fallback context was available. "
+                    "If context is insufficient, say what is missing."
+                )
+
+            fallback_result = chain.invoke({"question": fallback_question})
+            web_answer = fallback_result.get("answer") or fallback_result.get("result") or str(fallback_result)
+
+            web_answer = re.sub(r"\*\*(.*?)\*\*", r"\n<b>\1</b>", web_answer)
+            web_answer = web_answer.replace("\\n", "\n")
+            web_answer = web_answer.replace(r"\*", "/")
+
+            return jsonify({
+                "answer": web_answer,
+                "context_rating": rating_json,
+                "used_web_fallback": web_result.get("used_web_fallback", False),
+                "web_sources": web_result.get("sources", []),
+                "fallback_reason": web_result.get("reason", "low_context_relevance"),
+                "answer_urls": _build_answer_urls(current_page_url, web_result.get("sources", []))
+            })
+                
     except Exception as e:
         error_text = str(e)
         print(f"askIt error: {error_text}")
